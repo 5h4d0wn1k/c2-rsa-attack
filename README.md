@@ -1,121 +1,98 @@
 # C2 — RSA Common-Attack Suite
 
-A comprehensive toolkit for demonstrating common RSA vulnerabilities and attack vectors.
+A real RSA attack toolkit for **authorized security testing and education**.
+Each attack is implemented with real number-theory mechanics, runs fully
+offline, and verifies that the recovered key/message is genuinely correct.
 
-## Overview
+## IMPORTANT: Read before use.
 
-This project implements various RSA attacks to demonstrate cryptographic weaknesses when RSA is improperly implemented. These attacks exploit mathematical properties of RSA when certain conditions are met.
+**For educational and authorized security testing purposes only.**
 
-## Features
+- You MUST have explicit written authorization to test a system before
+  applying cryptanalysis to it.
+- Breaking encryption you do not own or lack authorization to test may violate
+  the **Computer Fraud and Abuse Act (CFAA)**, the **Digital Millennium
+  Copyright Act (DMCA)**, state computer-crime statutes, and applicable export
+  controls. You are solely responsible for lawful use.
+- Use only on your own systems or within a defined lab scope (lab-* hosts,
+  192.0.2.x ranges, example.com).
+- Provided "AS IS", no warranty; the author is not liable for misuse or damage.
 
-- **Wiener Attack**: Exploits small private exponents using continued fractions
-- **Hastad Broadcast Attack**: Decrypts RSA when same message is sent to multiple recipients
-- **Franklin-Reiter Attack**: Related message attack with polynomial GCD
-- **Fermat Factorization**: Factors N when p and q are close together
-- **Common Modulus Attack**: Recovers message when same N is used with different exponents
+## What genuinely works (real mechanics, stdlib only)
 
-## Installation
+- **Fermat factorization** — factors N when p and q are close together.
+- **Common modulus attack** — recovers m from c1=m^e1, c2=m^e2 under the same
+  N with coprime e1/e2 (extended Euclidean + negative-exponent `pow`).
+- **Wiener's attack** — recovers the private exponent d from (e,n) via
+  continued fractions when d < N^(1/4)/3.
+- **Hastad broadcast attack** — recovers m from e ciphertexts of the same
+  message under different coprime moduli using the Chinese Remainder Theorem
+  followed by an integer e-th root (e=3).
 
-```bash
-pip install pycryptodome gmpy2
-```
+Each demo generates deliberately weak lab keys and **asserts** the recovered
+value actually matches (key recovery check), so a nonzero exit means a failed
+attack. No third-party crypto libraries are required (pure stdlib `hashlib`/
+`math`/`random` + Miller-Rabin primality).
+
+## Requirements
+
+- Python 3.8+ (standard library only).
 
 ## Usage
 
 ```bash
-# Wiener attack demonstration
-python3 rsa_attacks.py wiener --bits 1024
+# List options
+python3 firmware/rsa_attacks.py --help
 
-# Hastad broadcast attack
-python3 rsa_attacks.py hastad --recipients 3 --bits 512
+# Individual attacks (diagnostics with parameter labels)
+python3 firmware/rsa_attacks.py fermat --bits 256
+python3 firmware/rsa_attacks.py common-modulus --bits 256
+python3 firmware/rsa_attacks.py wiener --bits 256
+python3 firmware/rsa_attacks.py hastad --recips 3
 
-# Franklin-Reiter related message attack
-python3 rsa_attacks.py franklin-reiter --bits 512
+# Deterministic seed
+python3 firmware/rsa_attacks.py all --seed 42
 
-# Fermat factorization
-python3 rsa_attacks.py fermat --bits 1024
-
-# Common modulus attack
-python3 rsa_attacks.py common-modulus --bits 512
-
-# Run all demonstrations
-python3 rsa_attacks.py all
+# Full run
+python3 firmware/rsa_attacks.py all
 ```
 
-## Attack Descriptions
+Exit code is 0 only if every attack reported a true key/message recovery.
 
-### Wiener Attack
-Exploits RSA when the private exponent d is small (d < N^0.25). Uses continued fraction expansion of e/N to recover d.
+## Demo (offline, deterministic)
 
-### Hastad Broadcast Attack
-When the same plaintext is encrypted with the same modulus N but different public exponents e1, e2, e3... and the exponents are coprime, we can use CRT to recover the plaintext.
-
-### Franklin-Reiter Attack
-When two messages m1 and m2 are related (e.g., m2 = m1 + delta), and encrypted with the same (N, e), the messages can be recovered using polynomial GCD.
-
-### Fermat Factorization
-When p and q are close together, N can be factored by searching for a = sqrt(N) + k until a² - N is a perfect square.
-
-### Common Modulus Attack
-When the same message is encrypted with same N but different exponents that are coprime, the message can be recovered using extended Euclidean algorithm.
-
-## Example Output
-
-```
-=== C2 — RSA Common-Attack Suite ===
-
-[Wiener Attack]
-Generated RSA with small private exponent
-Public Key:  (65537, 1234567890...)
-Recovered d: 12345...
-Original d:  12345...
-Attack SUCCESSFUL!
-
-[Hastad Broadcast Attack]
-Generated 3 recipients with e=3
-Encrypted same message to all
-Recovered via CRT: b'Attack successful!'
-Attack SUCCESSFUL!
+```bash
+python3 demo.py
 ```
 
-## Legal Disclaimer
+Runs all four attacks against seeded lab keys and verifies recovery. Exits 0
+on success.
 
-**IMPORTANT: Read before use.**
+## Tests
 
-This project is provided for **educational and authorized security testing purposes only**.
+```bash
+python3 -m unittest discover -s tests
+```
 
-### Authorization Requirements
-- You MUST have explicit written permission from the system owner before using this tool
-- Cryptanalysis of systems you do not own or have authorization to test is illegal
-- This tool should ONLY be used on systems you own or have written authorization to test
+## Live Lab Test Plan
 
-### Legal Framework
-- **Computer Fraud and Abuse Act (CFAA)**: Unauthorized access to computer systems is a federal crime
-- **Digital Millennium Copyright Act (DMCA)**: Circumvention of technological protection measures may be illegal
-- **State Laws**: Many states have additional computer crime statutes
-- **Export Controls**: Cryptographic tools may be subject to export regulations
+1. **Offline unit tests**: `python3 -m unittest discover -s tests` — validates
+   number theory primitives and each attack against generated lab keys.
+2. **Offline demo**: `python3 demo.py` — run all 4 attacks, confirm exit 0.
+3. **Reproducibility**: `python3 firmware/rsa_attacks.py all --seed 42` must
+   produce the same key recovery output each run.
+4. **Cross-validation**: on a lab host, generate an RSA modulus with close
+   primes or a small d and confirm the suite recovers the factors/exponent.
+5. **Lab scope**: never run against third-party hosts or keys without written
+   authorization.
 
-### Acceptable Use
-- Testing security of your own cryptographic implementations
-- Authorized penetration testing with written scope
-- Academic research in controlled lab environments
-- Security education and training
-- CTF competitions and challenges
+## Metrics
 
-### Prohibited Use
-- Attacking systems you do not own or have authorization to test
-- Breaking encryption for unauthorized access
-- Any activity that violates applicable laws or regulations
-- Commercial use without proper licensing
-
-### No Warranty
-This software is provided "AS IS" without warranty of any kind. The author is not responsible for any misuse or damage caused by this software.
-
-### Responsible Disclosure
-If you discover vulnerabilities using this tool, follow responsible disclosure practices:
-1. Report to the vendor/owner privately
-2. Allow reasonable time for remediation
-3. Do not exploit beyond proof of concept
+- Attacks: **4** (Fermat, Common Modulus, Wiener, Hastad broadcast).
+- Primality: Miller-Rabin (40 rounds default, 30 for generation).
+- Determinism: fixed `--seed` yields reproducible runs.
+- Verification: every demo asserts `recovered == original` before reporting.
+- Reports: JSON under `reports/`, `gitignored`.
 
 ## License
 

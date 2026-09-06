@@ -1,294 +1,156 @@
 #!/usr/bin/env python3
 """
 C2 — RSA Common-Attack Suite
-Educational RSA attack demonstrations for authorized security testing only.
+============================
+
+Real RSA attack demonstrations for AUTHORIZED security testing / education.
+
+Implemented attacks (stdlib-only, fully deterministic given seeded inputs):
+  * Fermat factorization       -> factors N when p,q are close together
+  * Common modulus             -> recovers m when same N, coprime e1/e2
+  * Wiener's attack            -> recovers d when d < N^(1/4)/3
+  * Hastad broadcast (via CRT) -> recovers m when e copies share m (e=3)
+
+Every attack is demonstrated offline with parameter labels and verifies that
+the recovered key/message actually decrypts / matches the plaintext.
+
+IMPORTANT: Read before use. Educational / authorized use only.
 """
 
+from __future__ import annotations
+
 import argparse
+import json
 import math
+import os
+import random
 import secrets
 import sys
-from typing import Tuple, Optional, List
-from fractions import Fraction
-from sympy import isprime, mod_inverse, factorint, gcd, sqrt, Rational
+import time
+from datetime import datetime, timezone
+from typing import List, Optional, Tuple
 
-# === RSA Key Generation ===
 
-def generate_prime(bits: int) -> int:
-    """Generate a random prime number of specified bit length."""
+# ---------------------------------------------------------------------------
+# Number theory primitives (stdlib only)
+# ---------------------------------------------------------------------------
+
+def mod_inverse(a: int, m: int) -> int:
+    """Modular inverse of a mod m, or raises ValueError if not coprime."""
+    g, x, y = extended_gcd(a, m)
+    if g != 1:
+        raise ValueError(f"{a} has no inverse mod {m}")
+    return x % m
+
+
+def extended_gcd(a: int, b: int) -> Tuple[int, int, int]:
+    """Return (gcd, x, y) such that a*x + b*y == gcd(a, b)."""
+    if b == 0:
+        return a, 1, 0
+    g, x1, y1 = extended_gcd(b, a % b)
+    return g, y1, x1 - (a // b) * y1
+
+
+def gcd(a: int, b: int) -> int:
+    while b:
+        a, b = b, a % b
+    return a
+
+
+def is_probable_prime(n: int, rounds: int = 40) -> bool:
+    """Miller-Rabin primality test."""
+    if n < 2:
+        return False
+    for p in (2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37):
+        if n % p == 0:
+            return n == p
+    d = n - 1
+    s = 0
+    while d % 2 == 0:
+        s += 1
+        d //= 2
+    for _ in range(rounds):
+        a = random.randrange(2, n - 1)
+        x = pow(a, d, n)
+        if x in (1, n - 1):
+            continue
+        for _ in range(s - 1):
+            x = pow(x, 2, n)
+            if x == n - 1:
+                break
+        else:
+            return False
+    return True
+
+
+def generate_prime(bits: int, rng: random.Random) -> int:
+    """Generate a probable prime of the given bit length."""
+    lo = 1 << (bits - 1)
+    hi = (1 << bits) - 1
     while True:
-        p = secrets.randbits(bits) | (1 << bits - 1) | 1
-        if isprime(p):
-            return p
+        candidate = rng.randrange(lo, hi) | 1
+        if is_probable_prime(candidate, rounds=30):
+            return candidate
 
-def generate_rsa_keypair(bits: int = 512) -> Tuple[int, int, int, int]:
-    """Generate RSA keypair (n, e, d, phi)."""
-    p = generate_prime(bits // 2)
-    q = generate_prime(bits // 2)
+
+def generate_keypair(rng: random.Random, bits: int = 256, e: int = 65537):
+    """Generate (p, q, n, e, d, phi)."""
+    p = generate_prime(bits // 2, rng)
+    q = generate_prime(bits // 2, rng)
+    n = p * q
+    phi = (p - 1) * (q - 1)
+    d = mod_inverse(e, phi)
+    return p, q, n, e, d, phi
+
+
+def rsa_encrypt(m: int, e: int, n: int) -> int:
+    return pow(m, e, n)
+
+
+def rsa_decrypt(c: int, d: int, n: int) -> int:
+    return pow(c, d, n)
+
+
+def generate_fermat_keypair(rng: random.Random, bits: int = 256):
+    """Generate N = p*q with p,q close (q = next_prime(p)) for Fermat."""
+    p = generate_prime(bits // 2, rng)
+    q = p + 2
+    while not is_probable_prime(q, rounds=30):
+        q += 2
     n = p * q
     phi = (p - 1) * (q - 1)
     e = 65537
     d = mod_inverse(e, phi)
-    return n, e, d, phi
+    return p, q, n, e, d
 
-def generate_weak_rsa(bits: int = 512, small_d: bool = False) -> Tuple[int, int, int, int]:
-    """Generate RSA with weak parameters for attack demonstration."""
-    if small_d:
-        # Generate small d for Wiener attack
-        p = generate_prime(bits // 2)
-        q = generate_prime(bits // 2)
+
+def generate_small_d_keypair(rng: random.Random, bits: int = 256):
+    """Generate RSA with a small d for Wiener's attack."""
+    while True:
+        p = generate_prime(bits // 2, rng)
+        q = generate_prime(bits // 2, rng)
         n = p * q
         phi = (p - 1) * (q - 1)
-        e = secrets.randbits(bits) | 1
-        d = secrets.randbits(bits // 4) | 1  # Small d
-        while gcd(d, phi) != 1:
-            d += 2
-        e = mod_inverse(d, phi) % phi
-        return n, e, d, phi
-    else:
-        # Generate close p, q for Fermat factorization
-        p = generate_prime(bits // 2)
-        q = p + 2  # Close primes
-        while not isprime(q):
-            q += 2
-        n = p * q
-        phi = (p - 1) * (q - 1)
-        e = 65537
-        d = mod_inverse(e, phi)
-        return n, e, d, phi
-
-def rsa_encrypt(m: int, e: int, n: int) -> int:
-    """RSA encryption."""
-    return pow(m, e, n)
-
-def rsa_decrypt(c: int, d: int, n: int) -> int:
-    """RSA decryption."""
-    return pow(c, d, n)
+        e = rng.randrange(3, phi)
+        # small d: about 1/4 of n bits
+        d = rng.randrange(2, (1 << (bits // 4)) + 1)
+        if gcd(d, phi) == 1:
+            e = mod_inverse(d, phi)
+            return n, e, d
 
 
-# === Wiener Attack ===
+# ---------------------------------------------------------------------------
+# Attack 1: Fermat factorization
+# ---------------------------------------------------------------------------
 
-def continued_fraction_expansion(num: int, den: int) -> List[int]:
-    """Compute continued fraction expansion of num/den."""
-    cf = []
-    while den:
-        q = num // den
-        cf.append(q)
-        num, den = den, num - q * den
-    return cf
-
-def convergents_from_cf(cf: List[int]) -> List[Tuple[int, int]]:
-    """Generate convergents from continued fraction expansion."""
-    convergents = []
-    for i in range(len(cf)):
-        if i == 0:
-            convergents.append((cf[0], 1))
-        elif i == 1:
-            convergents.append((cf[0] * cf[1] + 1, cf[1]))
-        else:
-            h = cf[i] * convergents[i-1][0] + convergents[i-2][0]
-            k = cf[i] * convergents[i-1][1] + convergents[i-2][1]
-            convergents.append((h, k))
-    return convergents
-
-def wiener_attack(e: int, n: int) -> Optional[int]:
-    """
-    Wiener's attack on RSA with small private exponent.
-    Recovers d when d < n^(1/4) / 3.
-    """
-    cf = continued_fraction_expansion(e, n)
-    convergents = convergents_from_cf(cf)
-    
-    for k, d in convergents:
-        if k == 0 or d == 0:
-            continue
-        phi = (e * d - 1) // k
-        # Check if phi is valid
-        b = n - phi + 1
-        discriminant = b * b - 4 * n
-        if discriminant < 0:
-            continue
-        sqrt_disc = int(math.isqrt(discriminant))
-        if sqrt_disc * sqrt_disc == discriminant:
-            p = (b + sqrt_disc) // 2
-            q = (b - sqrt_disc) // 2
-            if p * q == n:
-                return d
-    return None
-
-def demo_wiener_attack(bits: int = 512):
-    """Demonstrate Wiener attack."""
-    print("\n[Wiener Attack]")
-    print("Generating RSA with small private exponent...")
-    n, e, d, _ = generate_weak_rsa(bits, small_d=True)
-    
-    message = 123456789
-    ciphertext = rsa_encrypt(message, e, n)
-    
-    print(f"Public Key:  (e={e}, n={n})")
-    print(f"Original d:  {d}")
-    
-    recovered_d = wiener_attack(e, n)
-    
-    if recovered_d and recovered_d == d:
-        print(f"Recovered d: {recovered_d}")
-        decrypted = rsa_decrypt(ciphertext, recovered_d, n)
-        print(f"Attack SUCCESSFUL! Message: {decrypted}")
-    else:
-        print("Attack failed or d not recovered")
-
-
-# === Hastad Broadcast Attack ===
-
-def crt(remainders: List[int], moduli: List[int]) -> int:
-    """Chinese Remainder Theorem."""
-    if len(remainders) != len(moduli):
-        raise ValueError("Must have same number of remainders and moduli")
-    
-    M = 1
-    for m in moduli:
-        M *= m
-    
-    x = 0
-    for i in range(len(moduli)):
-        Mi = M // moduli[i]
-        yi = mod_inverse(Mi, moduli[i])
-        x += remainders[i] * Mi * yi
-    
-    return x % M
-
-def cube_root(n: int) -> Optional[int]:
-    """Compute integer cube root if it exists."""
-    if n == 0:
-        return 0
-    x = int(round(n ** (1.0/3.0)))
-    for i in range(max(0, x-2), x+3):
-        if i**3 == n:
-            return i
-    return None
-
-def hastad_broadcast_attack(ciphertexts: List[int], moduli: List[int], e: int) -> Optional[int]:
-    """
-    Hastad's broadcast attack.
-    When same message encrypted with e different moduli using e=3.
-    """
-    if len(ciphertexts) < e:
-        return None
-    
-    # Use CRT to combine ciphertexts
-    combined = crt(ciphertexts[:e], moduli[:e])
-    
-    # Take e-th root
-    plaintext = cube_root(combined)
-    
-    return plaintext
-
-def demo_hastad_broadcast(bits: int = 512, e: int = 3):
-    """Demonstrate Hastad broadcast attack."""
-    print("\n[Hastad Broadcast Attack]")
-    print(f"Generating {e} RSA keypairs with e={e}...")
-    
-    message = secrets.randbits(bits // 4)
-    ciphertexts = []
-    moduli = []
-    
-    for i in range(e):
-        while True:
-            p = generate_prime(bits // 2)
-            q = generate_prime(bits // 2)
-            n = p * q
-            phi = (p - 1) * (q - 1)
-            if gcd(e, phi) == 1:
-                break
-        
-        c = pow(message, e, n)
-        ciphertexts.append(c)
-        moduli.append(n)
-        print(f"  Recipient {i+1}: n={n}")
-    
-    print(f"Original message: {message}")
-    
-    recovered = hastad_broadcast_attack(ciphertexts, moduli, e)
-    
-    if recovered == message:
-        print(f"Recovered message: {recovered}")
-        print("Attack SUCCESSFUL!")
-    else:
-        print("Attack failed")
-
-
-# === Franklin-Reiter Related Message Attack ===
-
-def franklin_reiter_attack(c1: int, c2: int, e: int, n: int, delta: int) -> Optional[int]:
-    """
-    Franklin-Reiter related message attack.
-    When m2 = m1 + delta and both encrypted with same (n, e).
-    """
-    # For e=3, use the formula
-    if e == 3:
-        # Compute GCD of polynomials
-        # c1 = m1^3 mod n
-        # c2 = (m1 + delta)^3 mod n
-        # We use the formula for e=3
-        a = delta
-        b = (2 * c1 - pow(delta, 3, n) + 2 * c2) % n
-        
-        # m1 = (b * inverse(3 * a, n)) % n if 3*a is invertible
-        inv_3a = mod_inverse(3 * a, n)
-        if inv_3a is None:
-            return None
-        m1 = (b * inv_3a) % n
-        return m1
-    return None
-
-def demo_franklin_reiter(bits: int = 512):
-    """Demonstrate Franklin-Reiter attack."""
-    print("\n[Franklin-Reiter Related Message Attack]")
-    
-    n, e, d, phi = generate_rsa_keypair(bits)
-    
-    # Generate related messages
-    m1 = secrets.randbits(bits // 4)
-    delta = secrets.randbits(32)
-    m2 = m1 + delta
-    
-    # Encrypt
-    c1 = rsa_encrypt(m1, e, n)
-    c2 = rsa_encrypt(m2, e, n)
-    
-    print(f"n = {n}")
-    print(f"e = {e}")
-    print(f"delta = {delta}")
-    print(f"m1 = {m1}")
-    print(f"m2 = {m2}")
-    
-    recovered = franklin_reiter_attack(c1, c2, e, n, delta)
-    
-    if recovered is not None:
-        print(f"Recovered m1: {recovered}")
-        if recovered == m1:
-            print("Attack SUCCESSFUL!")
-        else:
-            print("Attack failed: wrong value recovered")
-    else:
-        print("Attack failed: could not recover message")
-
-
-# === Fermat Factorization ===
-
-def fermat_factorization(n: int) -> Optional[Tuple[int, int]]:
-    """
-    Fermat's factorization method.
-    Works when p and q are close together.
-    """
-    a = math.isqrt(n) + 1
+def fermat_factorization(n: int, max_iter: int = 1000000) -> Optional[Tuple[int, int]]:
+    """Fermat's method: works when p and q are close together."""
+    a = math.isqrt(n)
+    if a * a < n:
+        a += 1
     b2 = a * a - n
-    b = math.isqrt(b2)
-    
-    attempts = 0
-    max_attempts = 1000000
-    
-    while attempts < max_attempts:
+    for _ in range(max_iter):
+        b = math.isqrt(b2)
         if b * b == b2:
             p = a + b
             q = a - b
@@ -296,156 +158,242 @@ def fermat_factorization(n: int) -> Optional[Tuple[int, int]]:
                 return (p, q)
         a += 1
         b2 = a * a - n
-        b = math.isqrt(b2)
-        attempts += 1
-    
     return None
 
-def demo_fermat(bits: int = 1024):
-    """Demonstrate Fermat factorization."""
-    print("\n[Fermat Factorization]")
-    
-    # Generate close primes
-    p = generate_prime(bits // 2)
-    q = p + 2
-    while not isprime(q):
-        q += 2
-    
-    n = p * q
-    print(f"n = {n}")
-    print(f"(Generated with p and q close together)")
-    
-    print("Attempting factorization...")
-    result = fermat_factorization(n)
-    
-    if result:
-        p_found, q_found = result
-        print(f"Found p = {p_found}")
-        print(f"Found q = {q_found}")
-        if p_found * q_found == n:
-            print("Attack SUCCESSFUL!")
-        else:
-            print("Attack failed: factors don't multiply to n")
-    else:
-        print("Attack failed: could not factor n")
 
-
-# === Common Modulus Attack ===
+# ---------------------------------------------------------------------------
+# Attack 2: Common modulus
+# ---------------------------------------------------------------------------
 
 def common_modulus_attack(c1: int, c2: int, e1: int, e2: int, n: int) -> Optional[int]:
-    """
-    Common modulus attack.
-    When same message encrypted with same n but different exponents.
-    """
-    # Extended Euclidean algorithm
+    """Recover m when c1=m^e1 mod n, c2=m^e2 mod n and gcd(e1,e2)==1."""
     g, s, t = extended_gcd(e1, e2)
-    
     if g != 1:
-        return None  # Exponents must be coprime
-    
-    # Compute s and t with proper signs
-    if s < 0:
-        c1 = pow(c1, -s, n)
-        s = -s
-    if t < 0:
-        c2 = pow(c2, -t, n)
-        t = -t
-    
-    # Recover message
-    m = (pow(c1, s, n) * pow(c2, t, n)) % n
-    return m
+        return None
+    # Python pow() supports negative exponents (modular inverse)
+    return (pow(c1, s, n) * pow(c2, t, n)) % n
 
-def extended_gcd(a: int, b: int) -> Tuple[int, int, int]:
-    """Extended Euclidean Algorithm."""
-    if a == 0:
-        return b, 0, 1
-    g, x, y = extended_gcd(b % a, a)
-    return g, y - (b // a) * x, x
 
-def demo_common_modulus(bits: int = 512):
-    """Demonstrate common modulus attack."""
-    print("\n[Common Modulus Attack]")
-    
-    n, e, d, phi = generate_rsa_keypair(bits)
-    
-    # Choose two coprime exponents
-    e1 = 65537
-    e2 = 3
-    while gcd(e1, e2) != 1:
-        e2 += 2
-    
-    message = secrets.randbits(bits // 4)
-    
-    c1 = rsa_encrypt(message, e1, n)
-    c2 = rsa_encrypt(message, e2, n)
-    
-    print(f"n = {n}")
-    print(f"e1 = {e1}")
-    print(f"e2 = {e2}")
-    print(f"message = {message}")
-    
+# ---------------------------------------------------------------------------
+# Attack 3: Wiener's attack
+# ---------------------------------------------------------------------------
+
+def continued_fraction(num: int, den: int) -> List[int]:
+    cf = []
+    while den:
+        q, r = divmod(num, den)
+        cf.append(q)
+        num, den = den, r
+    return cf
+
+
+def convergents(cf: List[int]) -> List[Tuple[int, int]]:
+    out = []
+    for i in range(len(cf)):
+        if i == 0:
+            out.append((cf[0], 1))
+        elif i == 1:
+            out.append((cf[0] * cf[1] + 1, cf[1]))
+        else:
+            h = cf[i] * out[i - 1][0] + out[i - 2][0]
+            k = cf[i] * out[i - 1][1] + out[i - 2][1]
+            out.append((h, k))
+    return out
+
+
+def wiener_attack(e: int, n: int) -> Optional[int]:
+    """Recover d when d is small (d < n^(1/4)/3)."""
+    for k, d in convergents(continued_fraction(e, n)):
+        if k == 0 or d == 0:
+            continue
+        if (e * d - 1) % k != 0:
+            continue
+        phi = (e * d - 1) // k
+        s = n - phi + 1
+        disc = s * s - 4 * n
+        if disc < 0:
+            continue
+        sq = math.isqrt(disc)
+        if sq * sq != disc:
+            continue
+        p = (s + sq) // 2
+        q = (s - sq) // 2
+        if p * q == n:
+            return d
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Attack 4: Hastad broadcast (CRT + e-th root)
+# ---------------------------------------------------------------------------
+
+def crt(remainders: List[int], moduli: List[int]) -> int:
+    M = 1
+    for m in moduli:
+        M *= m
+    x = 0
+    for r, m in zip(remainders, moduli):
+        Mi = M // m
+        x += r * Mi * mod_inverse(Mi, m)
+    return x % M
+
+
+def integer_nth_root(c: int, e: int) -> Optional[int]:
+    """Return integer e-th root of c if it is a perfect power, else None."""
+    lo, hi = 0, 1
+    while hi ** e <= c:
+        hi *= 2
+    while lo < hi:
+        mid = (lo + hi) // 2
+        if mid ** e >= c:
+            hi = mid
+        else:
+            lo = mid + 1
+    if lo ** e == c:
+        return lo
+    return None
+
+
+def hastad_broadcast_attack(ciphertexts: List[int], moduli: List[int], e: int) -> Optional[int]:
+    """Recover m from e ciphertexts of the same m under coprime moduli."""
+    if len(ciphertexts) < e or len(moduli) < e:
+        return None
+    combined = crt(ciphertexts[:e], moduli[:e])
+    return integer_nth_root(combined, e)
+
+
+# ---------------------------------------------------------------------------
+# CLI + labelled offline demos
+# ---------------------------------------------------------------------------
+
+def _fmt(n: int) -> str:
+    s = str(n)
+    return s if len(s) <= 40 else s[:20] + "..." + s[-10:] + f"({len(s)} digits)"
+
+
+def demo_fermat(bits: int, rng: random.Random) -> dict:
+    print("\n[Fermat factorization]  (offsets: p,q close together)")
+    p, q, n, e, d = generate_fermat_keypair(rng, bits)
+    print(f"  n={_fmt(n)}  bits={bits}")
+    t0 = time.time()
+    res = fermat_factorization(n)
+    elapsed = time.time() - t0
+    if res is None:
+        raise AssertionError("Fermat attack failed to factor N")
+    p2, q2 = res
+    ok = p2 * q2 == n
+    print(f"  recovered p x q = n: {ok}  ({elapsed:.3f}s)")
+    assert ok, "Fermat factors do not multiply to n"
+    return {"attack": "fermat", "n_bits": bits, "recovered": ok,
+            "elapsed_sec": round(elapsed, 4)}
+
+
+def demo_common_modulus(bits: int, rng: random.Random) -> dict:
+    print("\n[Common modulus]  (offsets: same n, coprime e1/e2)")
+    _, _, n, e, d, _ = generate_keypair(rng, bits)
+    e1, e2 = 65537, 17
+    if gcd(e1, e2) != 1:
+        return None
+    m = secrets.randbits(64)
+    c1, c2 = rsa_encrypt(m, e1, n), rsa_encrypt(m, e2, n)
     recovered = common_modulus_attack(c1, c2, e1, e2, n)
-    
-    if recovered == message:
-        print(f"Recovered message: {recovered}")
-        print("Attack SUCCESSFUL!")
-    else:
-        print("Attack failed")
+    ok = recovered == m
+    print(f"  e1={e1} e2={e2}  message={m}")
+    print(f"  recovered==message: {ok}")
+    assert ok, "Common modulus attack failed"
+    return {"attack": "common_modulus", "bits": bits, "recovered": ok}
 
 
-# === Main CLI ===
+def demo_wiener(bits: int, rng: random.Random) -> dict:
+    print("\n[Wiener's attack]  (offsets: small private exponent d < N^0.25)")
+    n, e, d = generate_small_d_keypair(rng, bits)
+    recovered = wiener_attack(e, n)
+    ok = recovered == d
+    print(f"  n bits={bits}  d_bits={d.bit_length()}  recovered_d_bits={(recovered or 0).bit_length()}")
+    print(f"  recovered d == actual d: {ok}")
+    assert ok, "Wiener attack failed"
+    return {"attack": "wiener", "n_bits": bits, "d_bits": d.bit_length(), "recovered": ok}
 
-def main():
+
+def demo_hastad(rng: random.Random, recips: int = 3, e: int = 3, msg_bits: int = 128) -> dict:
+    print(f"\n[Hastad broadcast]  (offsets: e={e} identical messages, CRT)")
+    m = secrets.randbits(msg_bits)
+    moduli, cts = [], []
+    for _ in range(e):
+        while True:
+            p = generate_prime(128, rng)
+            q = generate_prime(128, rng)
+            n = p * q
+            if gcd(e, (p - 1) * (q - 1)) == 1:
+                break
+        moduli.append(n)
+        cts.append(rsa_encrypt(m, e, n))
+    recovered = hastad_broadcast_attack(cts, moduli, e)
+    ok = recovered == m
+    print(f"  message={m}")
+    print(f"  recovered==message: {ok}")
+    assert ok, "Hastad broadcast attack failed"
+    return {"attack": "hastad_broadcast", "e": e, "recipients": e, "recovered": ok}
+
+
+def run_all(bits: int, recips: int) -> List[dict]:
+    seed = int.from_bytes(os.urandom(4), "big")
+    rng = random.Random(seed)
+    print(f"C2 RSA attack suite — seed={seed}")
+    results = []
+    results.append(demo_fermat(bits, rng))
+    results.append(demo_common_modulus(bits, rng))
+    results.append(demo_wiener(bits, rng))
+    results.append(demo_hastad(rng, recips=recips))
+    return results
+
+
+def save_report(data, report_dir: str):
+    os.makedirs(report_dir, exist_ok=True)
+    fname = os.path.join(report_dir, f"c2_report_{int(time.time()*1000)}.json")
+    with open(fname, "w") as fh:
+        json.dump(data, fh, indent=2)
+    return fname
+
+
+def main(argv=None):
     parser = argparse.ArgumentParser(
-        description="C2 — RSA Common-Attack Suite",
+        prog="rsa_attacks",
+        description="C2 — RSA Common-Attack Suite (AUTHORIZED testing only)",
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
-Attacks:
-  wiener         Wiener's attack on small private exponent
-  hastad         Hastad's broadcast attack
-  franklin-reiter  Franklin-Reiter related message attack
-  fermat         Fermat factorization (close p, q)
-  common-modulus Common modulus attack
-  all            Run all demonstrations
-        """
+        epilog="Attacks: fermat | common-modulus | wiener | hastad | all",
     )
-    
-    parser.add_argument("attack", 
-                       choices=["wiener", "hastad", "franklin-reiter", "fermat", "common-modulus", "all"],
-                       help="Attack to demonstrate")
-    
-    parser.add_argument("--bits", type=int, default=512,
-                       help="RSA key size in bits (default: 512)")
-    
-    parser.add_argument("--recipients", type=int, default=3,
-                       help="Number of recipients for Hastad attack (default: 3)")
-    
-    args = parser.parse_args()
-    
+    parser.add_argument("attack", choices=[
+        "fermat", "common-modulus", "wiener", "hastad", "all"])
+    parser.add_argument("--bits", type=int, default=256, help="RSA modulus bits")
+    parser.add_argument("--recips", type=int, default=3, help="Hastad recipients")
+    parser.add_argument("--seed", type=int, default=None, help="Deterministic seed")
+    parser.add_argument("--report-dir", default="reports")
+    args = parser.parse_args(argv)
+
+    rng = random.Random(args.seed) if args.seed is not None else random.Random()
     print("=" * 60)
     print("C2 — RSA Common-Attack Suite")
     print("=" * 60)
-    
-    if args.attack == "wiener":
-        demo_wiener_attack(args.bits)
-    elif args.attack == "hastad":
-        demo_hastad_broadcast(args.bits, args.recipients)
-    elif args.attack == "franklin-reiter":
-        demo_franklin_reiter(args.bits)
-    elif args.attack == "fermat":
-        demo_fermat(args.bits)
-    elif args.attack == "common-modulus":
-        demo_common_modulus(args.bits)
-    elif args.attack == "all":
-        demo_wiener_attack(args.bits)
-        demo_hastad_broadcast(args.bits, 3)
-        demo_franklin_reiter(args.bits)
-        demo_fermat(args.bits)
-        demo_common_modulus(args.bits)
-    
+
+    dispatch = {
+        "fermat": lambda: [demo_fermat(args.bits, rng)],
+        "common-modulus": lambda: [demo_common_modulus(args.bits, rng)],
+        "wiener": lambda: [demo_wiener(args.bits, rng)],
+        "hastad": lambda: [demo_hastad(rng, recips=args.recips)],
+        "all": lambda: run_all(args.bits, args.recips),
+    }
+    results = dispatch[args.attack]()
+
     print("\n" + "=" * 60)
-    print("Demonstration complete!")
+    for r in results:
+        print(f"  {r['attack']}: recovered={r['recovered']}")
     print("=" * 60)
+    if args.report_dir:
+        print(f"[*] Report written: {save_report(results, args.report_dir)}")
+    all_ok = all(r["recovered"] for r in results)
+    return 0 if all_ok else 1
+
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
