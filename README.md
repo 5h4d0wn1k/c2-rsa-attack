@@ -6,100 +6,73 @@
 
 # C2 — RSA Common-Attack Suite
 
-A real RSA attack toolkit for **authorized security testing and education**.
-Each attack is implemented with real number-theory mechanics, runs fully
-offline, and verifies that the recovered key/message is genuinely correct.
+An **RSA cryptanalysis** laboratory implementing **Wiener's attack, Hastad
+broadcast, Fermat factorization**, and the **common modulus attack** against
+deliberately weak lab keys — with verified key/message recovery.
 
-## IMPORTANT: Read before use.
+[![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Stars](https://img.shields.io/github/stars/5h4d0wn1k/c2-rsa-attack)](https://github.com/5h4d0wn1k/c2-rsa-attack)
+[![Last commit](https://img.shields.io/github/last-commit/5h4d0wn1k/c2-rsa-attack)](https://github.com/5h4d0wn1k/c2-rsa-attack)
+[![Issues](https://img.shields.io/github/issues/5h4d0wn1k/c2-rsa-attack)](https://github.com/5h4d0wn1k/c2-rsa-attack)
 
-**For educational and authorized security testing purposes only.**
+## Why C2
 
-- You MUST have explicit written authorization to test a system before
-  applying cryptanalysis to it.
-- Breaking encryption you do not own or lack authorization to test may violate
-  the **Computer Fraud and Abuse Act (CFAA)**, the **Digital Millennium
-  Copyright Act (DMCA)**, state computer-crime statutes, and applicable export
-  controls. You are solely responsible for lawful use.
-- Use only on your own systems or within a defined lab scope (lab-* hosts,
-  192.0.2.x ranges, example.com).
-- Provided "AS IS", no warranty; the author is not liable for misuse or damage.
+RSA's security depends on key parameters — and when those parameters are weak,
+the math works against it. C2 is an **educational cryptanalysis** lab that
+implements, from pure number theory, four classic RSA attacks: Fermat
+factorization for close primes, the common modulus attack via the extended
+Euclidean algorithm, Wiener's continued-fraction attack for small private
+exponents, and Hastad's broadcast attack with CRT plus an integer e-th root.
+Each attack runs offline, asserts the recovered value actually matches, and
+shows exactly when RSA key parameters become vulnerable. Break only keys you
+own or are authorized to test — cryptanalysis of third-party material may
+violate CFAA, DMCA, and export controls.
 
-## What genuinely works (real mechanics, stdlib only)
+## Features
 
-- **Fermat factorization** — factors N when p and q are close together.
-- **Common modulus attack** — recovers m from c1=m^e1, c2=m^e2 under the same
-  N with coprime e1/e2 (extended Euclidean + negative-exponent `pow`).
-- **Wiener's attack** — recovers the private exponent d from (e,n) via
-  continued fractions when d < N^(1/4)/3.
-- **Hastad broadcast attack** — recovers m from e ciphertexts of the same
-  message under different coprime moduli using the Chinese Remainder Theorem
-  followed by an integer e-th root (e=3).
+- **Wiener's attack** — recovers `d` from `(e, n)` via continued fractions when `d < n⁰·²⁵/3`
+- **Hastad broadcast attack** — recovers `m` from `e` ciphertexts under different moduli (CRT + integer root)
+- **Common modulus attack** — recovers `m` from two ciphertexts sharing `N` with coprime exponents
+- **Fermat factorization** — factors `N` when `p` and `q` are close
+- **Weak keygen** — deliberate weak lab keys (small d, close primes, shared modulus)
+- **Verified recovery** — every demo asserts `recovered == original`
+- **Deterministic** — reproducible `--seed` runs
+- **Pure stdlib** — Miller-Rabin, `math`, `random`; no third-party crypto libraries
 
-Each demo generates deliberately weak lab keys and **asserts** the recovered
-value actually matches (key recovery check), so a nonzero exit means a failed
-attack. No third-party crypto libraries are required (pure stdlib `hashlib`/
-`math`/`random` + Miller-Rabin primality).
-
-## Requirements
-
-- Python 3.8+ (standard library only).
-
-## Usage
+## Quickstart
 
 ```bash
-# List options
-python3 firmware/rsa_attacks.py --help
+# Offline demo — all four attacks, key-recovery asserted, exit 0
+python3 demo.py
 
-# Individual attacks (diagnostics with parameter labels)
+# Individual attacks
 python3 firmware/rsa_attacks.py fermat --bits 256
 python3 firmware/rsa_attacks.py common-modulus --bits 256
 python3 firmware/rsa_attacks.py wiener --bits 256
 python3 firmware/rsa_attacks.py hastad --recips 3
 
-# Deterministic seed
+# Full deterministic run
 python3 firmware/rsa_attacks.py all --seed 42
 
-# Full run
-python3 firmware/rsa_attacks.py all
-```
-
-Exit code is 0 only if every attack reported a true key/message recovery.
-
-## Demo (offline, deterministic)
-
-```bash
-python3 demo.py
-```
-
-Runs all four attacks against seeded lab keys and verifies recovery. Exits 0
-on success.
-
-## Tests
-
-```bash
+# Tests
 python3 -m unittest discover -s tests
 ```
 
-## Live Lab Test Plan
+## Project structure
 
-1. **Offline unit tests**: `python3 -m unittest discover -s tests` — validates
-   number theory primitives and each attack against generated lab keys.
-2. **Offline demo**: `python3 demo.py` — run all 4 attacks, confirm exit 0.
-3. **Reproducibility**: `python3 firmware/rsa_attacks.py all --seed 42` must
-   produce the same key recovery output each run.
-4. **Cross-validation**: on a lab host, generate an RSA modulus with close
-   primes or a small d and confirm the suite recovers the factors/exponent.
-5. **Lab scope**: never run against third-party hosts or keys without written
-   authorization.
+- `firmware/rsa_attacks.py` — number-theory primitives and all four attacks
+- `demo.py` — offline demo harness writing `reports/`
+- `tests/` — math primitives and per-attack recovery checks
+- `CODE_OF_CONDUCT.md`, `CONTRIBUTING.md`, `ETHICS.md`, `SCOPE.md`, `SECURITY.md` — standards and legal scope
 
-## Metrics
+## Contributing
 
-- Attacks: **4** (Fermat, Common Modulus, Wiener, Hastad broadcast).
-- Primality: Miller-Rabin (40 rounds default, 30 for generation).
-- Determinism: fixed `--seed` yields reproducible runs.
-- Verification: every demo asserts `recovered == original` before reporting.
-- Reports: JSON under `reports/`, `gitignored`.
+See [CONTRIBUTING.md](CONTRIBUTING.md) and [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md).
 
 ## License
 
-MIT
+MIT — see [LICENSE](LICENSE).
+
+## Legal
+
+- [ETHICS.md](ETHICS.md) · [SCOPE.md](SCOPE.md) · [SECURITY.md](SECURITY.md)
